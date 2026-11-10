@@ -1,8 +1,8 @@
 {
-  "version": "2.3.2",
+  "version": "2.3.3",
   "download_url": "https://raw.githubusercontent.com/jakubmatuska-ops/matova-hbook-api/main/matova-hbook-api.zip",
   "requires": "5.8",
   "tested": "6.7",
   "requires_php": "7.4",
-  "changelog": "v2.3.2 — create reservation now creates & links the guest (name propagates), optional payment capture on create (paid / deposit via payments_logs), and faster update checks (1h manifest cache)."
+  "changelog": "v2.3.3 — record payment (doplatek) now stores the real HBook payment_method (Karta/Hotovost/QR), received_on date and online=no, instead of dropping the method. Local payments taken in Matova OS land correctly in HBook payments_logs."
 }
