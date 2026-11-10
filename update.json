@@ -1,8 +1,8 @@
 {
-  "version": "2.3.1",
+  "version": "2.3.2",
   "download_url": "https://raw.githubusercontent.com/jakubmatuska-ops/matova-hbook-api/main/matova-hbook-api.zip",
   "requires": "5.8",
   "tested": "6.7",
   "requires_php": "7.4",
-  "changelog": "v2.3.1 — reservation move (dates + unit), unit swap, native price recompute (HbPriceCalc), live capability detection in /meta, and one-click GitHub self-update."
+  "changelog": "v2.3.2 — create reservation now creates & links the guest (name propagates), optional payment capture on create (paid / deposit via payments_logs), and faster update checks (1h manifest cache)."
 }
