@@ -2,7 +2,8 @@ name: Release (signed)
 
 # Runs ONLY on a pushed version tag. Builds the plugin ZIP from src/, has it
 # signed by the managed signer (GitHub OIDC — no secrets stored here) and
-# publishes ZIP + update.json to main, which is what the resort sites read.
+# stages ZIP + update.json as a GitHub Release. Publishing to main (what the
+# resort sites read) is the separate "Promote release" workflow.
 on:
   push:
     tags: ['v*.*.*']
@@ -84,7 +85,13 @@ jobs:
           ' "${{ steps.ver.outputs.version }}" "${{ steps.sign.outputs.signature }}" \
             || { echo "::error::signature does not verify with the keys in the source"; exit 1; }
 
-      - name: Publish ZIP + manifest to main
+      # Staged rollout: the signed ZIP and manifest become a GitHub Release.
+      # Sites do NOT see it yet. Install the release ZIP on the test property,
+      # check it, then run the "Promote release" workflow to publish to main
+      # (which is what all sites read for updates).
+      - name: Create GitHub Release (staged, not yet visible to sites)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           CHANGELOG=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME" | head -c 1500)
@@ -92,11 +99,5 @@ jobs:
                 --arg sha "${{ steps.zip.outputs.sha256 }}" --arg log "$CHANGELOG" \
             '{version:$v, download_url:"https://raw.githubusercontent.com/jakubmatuska-ops/matova-hbook-api/main/matova-hbook-api.zip",
               requires:"5.8", tested:"6.7", requires_php:"7.4", sha256:$sha, signature:$sig, changelog:$log}' > update.json
-          git config user.name "matova-release"
-          git config user.email "release@users.noreply.github.com"
-          git fetch origin main
-          git checkout -B publish origin/main
-          git checkout "$GITHUB_SHA" -- src
-          git add matova-hbook-api.zip update.json src
-          git commit -m "Release ${{ steps.ver.outputs.version }} (signed)"
-          git push origin publish:main
+          gh release create "$GITHUB_REF_NAME" matova-hbook-api.zip update.json \
+            --title "${{ steps.ver.outputs.version }} (signed, staged)" --notes "$CHANGELOG" --prerelease

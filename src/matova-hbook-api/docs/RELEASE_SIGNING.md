@@ -24,9 +24,12 @@ is not enough to ship code to the sites.
 1. Bump `MHA_VERSION` + the header version in `src/matova-hbook-api/`, merge.
 2. Push tag `v<version>`.
 3. `release.yml` runs the tests, checks that the public key in the source is
-   the signer's key, builds the ZIP, asks the signer for a signature, writes
-   `update.json` and commits ZIP + manifest to `main`.
-4. Sites pick the update up on their next check and verify before installing.
+   the signer's key, builds the ZIP, asks the signer for a signature, and
+   stages ZIP + `update.json` as a GitHub Release. Sites do not see it yet.
+4. Install the staged ZIP on the test property (Borný) and check `/meta`.
+5. Run the **Promote release** workflow with the version. It re-verifies the
+   signature and commits ZIP + manifest to `main`.
+6. Sites pick the update up on their next check and verify before installing.
 
 ## Key rotation (automated, no site ever stranded)
 
