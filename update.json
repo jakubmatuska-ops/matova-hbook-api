@@ -29,8 +29,8 @@
       },
       "started_at": "2026-11-11T11:12:19.482Z",
       "stage": 1,
-      "phase": "update",
-      "phase_at": "2026-11-11T14:49:50.994Z",
+      "phase": "soak",
+      "phase_at": "2026-11-11T14:58:12.222Z",
       "verified": {
         "borny": "2026-11-11T14:41:25.223Z"
       },
