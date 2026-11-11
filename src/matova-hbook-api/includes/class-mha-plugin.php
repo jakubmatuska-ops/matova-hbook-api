@@ -61,6 +61,7 @@ class MHA_Plugin {
             'MHA_Payments_Controller',
             'MHA_Operations_Controller',
             'MHA_Relay_Controller',
+            'MHA_Update_Controller',
         ];
         foreach ($controllers as $cls) {
             try {

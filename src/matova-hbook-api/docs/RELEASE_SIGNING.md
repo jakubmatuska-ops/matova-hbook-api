@@ -5,9 +5,8 @@ signature** made by the Matova release signer. Changing files on `main`
 (ZIP, manifest) is not enough to ship code to the sites: only a tagged release
 run can obtain a signature.
 
-**Required repository setting:** a tag ruleset that lets only the owner create
-`v*` tags. Without it, anyone who can push a tag could run a modified release
-workflow and get it signed.
+**Required repository setting:** protect `main` (only the owner or approved
+pull requests). Whoever can push to `main` can release.
 
 ## How it works
 
@@ -26,15 +25,29 @@ workflow and get it signed.
 
 ## Releasing (fully automated)
 
-1. Bump `MHA_VERSION` + the header version in `src/matova-hbook-api/`, merge.
-2. Push tag `v<version>`.
-3. `release.yml` runs the tests, checks that the public key in the source is
-   the signer's key, builds the ZIP, asks the signer for a signature, and
-   stages ZIP + `update.json` as a GitHub Release. Sites do not see it yet.
-4. Install the staged ZIP on the test property (Borný) and check `/meta`.
-5. Run the **Promote release** workflow with the version. It re-verifies the
-   signature and commits ZIP + manifest to `main`.
-6. Sites pick the update up on their next check and verify before installing.
+1. Raise `MHA_VERSION` + the header version in `src/matova-hbook-api/` and
+   merge to `main`. Nothing else is done by hand.
+2. `release.yml` runs the tests, makes sure the source trusts the signer's
+   public key (written automatically the first time), builds the ZIP, has it
+   signed, publishes a GitHub Release and starts the staged rollout in
+   `update.json` (`rollout.candidate`).
+3. `rollout.yml` moves the release on, one small step per run:
+   test property (Borný) → installed by the site's own verified installer →
+   health checks → 2 h soak → Passage → Srdíčko → Sluníčko (each verified and
+   soaked) → default for everyone.
+4. A site installs only the release assigned to it (`rollout.by_site[host]`,
+   else `rollout.default`), only if the signature verifies, and puts the
+   previous version back by itself if a fresh request is not healthy afterwards.
+5. Any failed install or failed verification halts the rollout, withdraws the
+   release from sites not yet verified, rolls the failing site back and opens
+   an issue. Fix forward with a new version, or run Rollout with `resume`.
+
+Site checks and update triggers go through the Matova OS backend
+(`plugin-rollout`), which holds each site's scoped API key. GitHub holds no
+site credential and no signing key; it proves who it is with its OIDC token.
+
+Sites on ≤ 2.3.x have no remote update: their first install of a staged build
+is the normal "Update now" in WordPress; the rollout waits for it per site.
 
 ## Key rotation (automated, no site ever stranded)
 
@@ -43,14 +56,12 @@ workflow and get it signed.
 3. When every site runs that release, `promote` makes NEXT current; the next
    release moves it into `PUBKEY_B64`.
 
-## Creating the key (one time, automated)
+## Key handling
 
-Run the **Bootstrap signing key** workflow. It asks the signer to create the
-key inside the Vault (if none exists) and opens a pull request that puts the
-PUBLIC key into the source. No secret is shown, stored or copied anywhere.
-`rotate` / `promote` are restricted to the backend itself or a signed-in admin;
-`promote` keeps the previous key and requires naming the release that shipped
-the next public key.
+The key is created inside the Vault on the first release run; only its public
+half is written to the source. `rotate` / `promote` are restricted to the
+backend itself or a signed-in admin; `promote` keeps the previous key and
+requires naming the release that shipped the next public key.
 
 ## One-time bootstrap
 

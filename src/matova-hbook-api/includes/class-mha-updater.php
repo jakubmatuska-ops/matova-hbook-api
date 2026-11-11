@@ -74,9 +74,48 @@ class MHA_Updater {
 
     private static function current() { return defined('MHA_VERSION') ? MHA_VERSION : '0'; }
 
+    /** This site's host without "www." — the key used by staged rollouts. */
+    public static function site_host() {
+        $h = function_exists('wp_parse_url') ? wp_parse_url(home_url(), PHP_URL_HOST) : parse_url(home_url(), PHP_URL_HOST);
+        return preg_replace('/^www\./', '', strtolower((string) $h));
+    }
+
+    /**
+     * The release THIS site should run, or null for "nothing for you".
+     *
+     * Staged rollout: when the manifest has a `rollout` object, a site takes
+     * `rollout.by_site[<host>]` if present, else `rollout.default`. A release
+     * therefore reaches the test property first and the live properties only
+     * when the rollout workflow moves it on. The top-level version/download_url
+     * are read only by plugin versions that predate staged rollouts.
+     */
+    public static function release_for_site($m, $host = null) {
+        if (!is_array($m)) { return null; }
+        if (isset($m['rollout']) && is_array($m['rollout'])) {
+            $host = $host === null ? self::site_host() : (string) $host;
+            $r = $m['rollout'];
+            $rel = null;
+            if ($host !== '' && isset($r['by_site']) && is_array($r['by_site']) && isset($r['by_site'][$host]) && is_array($r['by_site'][$host])) {
+                $rel = $r['by_site'][$host];
+            } elseif (isset($r['default']) && is_array($r['default'])) {
+                $rel = $r['default'];
+            }
+            if (!is_array($rel) || empty($rel['version']) || empty($rel['download_url'])) { return null; }
+            foreach (['requires', 'tested', 'requires_php', 'changelog'] as $k) {
+                if (!isset($rel[$k]) && isset($m[$k])) { $rel[$k] = $m[$k]; }
+            }
+            return $rel;
+        }
+        if (empty($m['version']) || empty($m['download_url'])) { return null; }
+        return $m;
+    }
+
+    /** Manifest release for this site (cached manifest). */
+    public static function site_release() { return self::release_for_site(self::manifest()); }
+
     public static function inject($transient) {
         if (!is_object($transient)) { return $transient; }
-        $m = self::manifest();
+        $m = self::site_release();
         if (!$m) { return $transient; }
 
         $cur = self::current();
@@ -105,7 +144,7 @@ class MHA_Updater {
     public static function info($res, $action, $args) {
         if ($action !== 'plugin_information') { return $res; }
         if (empty($args->slug) || $args->slug !== self::SLUG) { return $res; }
-        $m = self::manifest();
+        $m = self::site_release();
         if (!$m) { return $res; }
         return (object) [
             'name'          => 'Matova HBook API',
@@ -193,7 +232,7 @@ class MHA_Updater {
      * version stays. Other plugins' downloads are untouched ($reply returned).
      */
     public static function verified_download($reply, $package, $upgrader = null, $hook_extra = []) {
-        $m = self::manifest();
+        $m = self::site_release();
         $is_ours = (is_array($hook_extra) && isset($hook_extra['plugin']) && $hook_extra['plugin'] === self::FILE)
             || (is_array($m) && !empty($m['download_url']) && is_string($package) && $package === (string) $m['download_url']);
         if (!$is_ours) { return $reply; }
@@ -219,5 +258,205 @@ class MHA_Updater {
             return new WP_Error('mha_update_bad_signature', 'Matova HBook API: podpis aktualizace nesouhlasí — instalace zrušena.');
         }
         return $tmp;
+    }
+
+    /* ------------------------------------------------------------------
+     * Remote-triggered, verified self-update (used by the rollout workflow).
+     * The caller cannot choose WHAT is installed: only the signed release the
+     * manifest assigns to this site, through the same verified download.
+     * ------------------------------------------------------------------ */
+
+    const OPT_LAST = 'mha_update_last';
+    const LOCK     = 'mha_self_update_lock';
+
+    public static function plugin_dir() { return rtrim(WP_PLUGIN_DIR, '/\\') . '/' . self::SLUG; }
+    /** Not under wp-content/upgrade: WordPress empties that folder on every update. */
+    public static function backup_root() {
+        $root = rtrim(WP_CONTENT_DIR, '/\\') . '/mha-backups';
+        if (!is_dir($root) && @mkdir($root, 0755, true)) {
+            @file_put_contents($root . '/index.php', "<?php // Silence is golden.\n");
+            @file_put_contents($root . '/.htaccess', "Require all denied\nDeny from all\n");
+        }
+        return $root;
+    }
+    public static function backup_dir($version) { return self::backup_root() . '/' . preg_replace('/[^0-9A-Za-z.\-]/', '', (string) $version); }
+
+    public static function copy_tree($from, $to) {
+        if (!is_dir($from)) { return false; }
+        if (!is_dir($to) && !@mkdir($to, 0755, true)) { return false; }
+        $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($from, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::SELF_FIRST);
+        foreach ($it as $item) {
+            $dest = $to . '/' . $it->getSubPathName();
+            if ($item->isDir()) { if (!is_dir($dest) && !@mkdir($dest, 0755, true)) { return false; } }
+            elseif (!@copy($item->getPathname(), $dest)) { return false; }
+        }
+        return true;
+    }
+
+    public static function remove_tree($dir) {
+        if (!is_dir($dir)) { return true; }
+        $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+        foreach ($it as $item) { $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname()); }
+        return @rmdir($dir);
+    }
+
+    /** Versions that can be restored on this site. */
+    public static function backups() {
+        $out = [];
+        foreach ((array) @glob(self::backup_root() . '/*', GLOB_ONLYDIR) as $d) { $out[] = basename($d); }
+        usort($out, 'version_compare');
+        return $out;
+    }
+
+    /** Version declared by the plugin files currently on disk (not the code in memory). */
+    public static function version_on_disk($dir = null) {
+        $f = ($dir === null ? self::plugin_dir() : $dir) . '/matova-hbook-api.php';
+        $src = is_readable($f) ? (string) @file_get_contents($f, false, null, 0, 8192) : '';
+        return preg_match("/define\\('MHA_VERSION',\\s*'([^']+)'\\)/", $src, $m) ? $m[1] : null;
+    }
+
+    /** Put a saved version back in place. The broken copy is kept aside, never deleted first. */
+    public static function restore($version) {
+        $backup = self::backup_dir($version);
+        if (!is_dir($backup) || self::version_on_disk($backup) === null) { return false; }
+        $live = self::plugin_dir();
+        $aside = self::backup_root() . '/.failed-' . gmdate('Ymd-His');
+        if (is_dir($live) && !@rename($live, $aside)) { return false; }
+        if (!self::copy_tree($backup, $live)) {
+            // Could not restore: put the previous files back so the site is not left without the plugin.
+            self::remove_tree($live);
+            @rename($aside, $live);
+            return false;
+        }
+        self::remove_tree($aside);
+        if (function_exists('opcache_reset')) { @opcache_reset(); }
+        return true;
+    }
+
+    /**
+     * Does a FRESH request to this site still get a healthy matova/v2 answer?
+     * Run by the old code that is still in memory right after the files were
+     * replaced, so a release that breaks the site is detected even though its
+     * own endpoints are dead.
+     */
+    public static function probe_health() {
+        $url = function_exists('rest_url') ? rest_url('matova/v2/health') : home_url('/wp-json/matova/v2/health');
+        $url .= (strpos($url, '?') === false ? '?' : '&') . 'mha_probe=' . time();
+        for ($i = 0; $i < 3; $i++) {
+            if ($i > 0) { sleep(2); }
+            $resp = wp_remote_get($url, ['timeout' => 15, 'sslverify' => false, 'headers' => ['Accept' => 'application/json', 'Cache-Control' => 'no-cache']]);
+            if (is_wp_error($resp)) { continue; }
+            $code = (int) wp_remote_retrieve_response_code($resp);
+            $body = json_decode((string) wp_remote_retrieve_body($resp), true);
+            if ($code === 200 && is_array($body)) {
+                $v = isset($body['data']['version']) ? (string) $body['data']['version'] : (isset($body['version']) ? (string) $body['version'] : null);
+                return ['ok' => true, 'version' => $v];
+            }
+        }
+        return ['ok' => false, 'version' => null];
+    }
+
+    private static function remember(array $r) {
+        $r['at'] = gmdate('c');
+        update_option(self::OPT_LAST, $r, false);
+        return $r;
+    }
+
+    /**
+     * Install the signed release assigned to this site, then prove the site
+     * still answers; if it does not, put the previous version back.
+     * Result `outcome`: up_to_date | updated | rolled_back | failed | busy.
+     */
+    public static function self_update() {
+        $from = self::current();
+        if (get_transient(self::LOCK)) { return ['outcome' => 'busy', 'version' => $from]; }
+        self::flush();
+        $rel = self::site_release();
+        if (!$rel || !version_compare((string) $rel['version'], $from, '>')) {
+            return ['outcome' => 'up_to_date', 'version' => $from, 'offered' => $rel ? (string) $rel['version'] : null];
+        }
+        $to = (string) $rel['version'];
+        if (!self::pubkeys() || empty($rel['signature'])) {
+            return self::remember(['outcome' => 'failed', 'from' => $from, 'to' => $to, 'error' => 'unsigned', 'version' => $from]);
+        }
+        set_transient(self::LOCK, 1, 600);
+        try {
+            // 1. Keep the running version so it can be put back.
+            $backup = self::backup_dir($from);
+            self::remove_tree($backup);
+            if (!self::copy_tree(self::plugin_dir(), $backup)) {
+                return self::remember(['outcome' => 'failed', 'from' => $from, 'to' => $to, 'error' => 'backup_failed', 'version' => $from]);
+            }
+
+            // 2. WordPress' own upgrader; the download goes through verified_download().
+            require_once ABSPATH . 'wp-admin/includes/file.php';
+            require_once ABSPATH . 'wp-admin/includes/misc.php';
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+            require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+            $was_active = function_exists('is_plugin_active') ? is_plugin_active(self::FILE) : true;
+            $t = get_site_transient('update_plugins');
+            if (!is_object($t)) { $t = new stdClass(); }
+            $t = self::inject($t);
+            set_site_transient('update_plugins', $t);
+            $upgrader = new Plugin_Upgrader(new Automatic_Upgrader_Skin());
+            // bulk_upgrade (what the wp-admin "Update now" link uses) keeps the
+            // plugin active; the single-plugin path deactivates it first.
+            $all = $upgrader->bulk_upgrade([self::FILE], ['clear_update_cache' => true]);
+            $res = (is_array($all) && array_key_exists(self::FILE, $all)) ? $all[self::FILE] : false;
+            if (function_exists('opcache_reset')) { @opcache_reset(); }
+
+            $disk = self::version_on_disk();
+            $installed = ($res === true || is_array($res));
+            if (!$installed || $disk !== $to) {
+                $err = is_wp_error($res) ? $res->get_error_code()
+                    : ((isset($upgrader->skin->result) && is_wp_error($upgrader->skin->result)) ? $upgrader->skin->result->get_error_code() : 'install_failed');
+                // Files may be half-replaced: make sure the previous version is what is on disk.
+                $untouched = ($disk === $from);
+                $restored = $untouched ? true : self::restore($from);
+                return self::remember(['outcome' => (!$untouched && $restored) ? 'rolled_back' : 'failed', 'from' => $from, 'to' => $to, 'error' => $err, 'version' => $restored ? $from : $disk]);
+            }
+            if ($was_active && function_exists('is_plugin_active') && !is_plugin_active(self::FILE) && function_exists('activate_plugin')) {
+                activate_plugin(self::FILE, '', false, true);
+            }
+
+            // 3. A fresh request must still be healthy, otherwise the old version goes back.
+            sleep(2);
+            $probe = self::probe_health();
+            if (!$probe['ok']) {
+                $restored = self::restore($from);
+                return self::remember(['outcome' => $restored ? 'rolled_back' : 'failed', 'from' => $from, 'to' => $to, 'error' => 'health_probe_failed', 'version' => $restored ? $from : $to]);
+            }
+            return self::remember(['outcome' => 'updated', 'from' => $from, 'to' => $to, 'version' => $to, 'probe_version' => $probe['version']]);
+        } catch (\Throwable $e) {
+            if (self::version_on_disk() !== $from) { self::restore($from); }
+            return self::remember(['outcome' => 'failed', 'from' => $from, 'to' => $to, 'error' => 'exception', 'version' => self::version_on_disk()]);
+        } finally {
+            delete_transient(self::LOCK);
+        }
+    }
+
+    /** Put the newest saved older version back (rollout halt / recovery). */
+    public static function self_rollback() {
+        $from = self::version_on_disk();
+        $older = array_values(array_filter(self::backups(), function ($v) use ($from) { return version_compare($v, (string) $from, '<'); }));
+        if (!$older) { return ['outcome' => 'failed', 'error' => 'no_backup', 'version' => $from]; }
+        $to = end($older);
+        $ok = self::restore($to);
+        return self::remember(['outcome' => $ok ? 'rolled_back' : 'failed', 'from' => $from, 'to' => $to, 'error' => $ok ? null : 'restore_failed', 'version' => $ok ? $to : $from]);
+    }
+
+    /** What the rollout checker needs to know about this site. */
+    public static function status() {
+        $rel = self::site_release();
+        return [
+            'site'            => self::site_host(),
+            'version'         => self::current(),
+            'version_on_disk' => self::version_on_disk(),
+            'offered'         => $rel ? (string) $rel['version'] : null,
+            'trusted_keys'    => count(self::pubkeys()),
+            'can_verify'      => function_exists('sodium_crypto_sign_verify_detached'),
+            'backups'         => self::backups(),
+            'last'            => get_option(self::OPT_LAST, null),
+        ];
     }
 }

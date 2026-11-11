@@ -1,12 +1,15 @@
-name: Release (signed)
+name: Release (signed, staged)
 
-# Runs ONLY on a pushed version tag. Builds the plugin ZIP from src/, has it
-# signed by the managed signer (GitHub OIDC — no secrets stored here) and
-# stages ZIP + update.json as a GitHub Release. Publishing to main (what the
-# resort sites read) is the separate "Promote release" workflow.
+# Fully automatic: a push to main whose plugin version is newer than the last
+# release is tested, built, signed by the managed signer (GitHub OIDC — no
+# secret is stored in GitHub or on any computer), published as a GitHub
+# Release and handed to the staged rollout (test property first).
+# A push that does not raise the version only runs the tests.
 on:
   push:
-    tags: ['v*.*.*']
+    branches: [main]
+    paths: ['src/**', 'tools/**', '.github/workflows/release.yml']
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -19,6 +22,7 @@ concurrency:
 env:
   SIGNER_URL: https://czjkwoyjpmyupcshwslu.supabase.co/functions/v1/plugin-release-sign
   AUDIENCE: matova-plugin-release
+  UPDATER: src/matova-hbook-api/includes/class-mha-updater.php
 
 jobs:
   release:
@@ -33,71 +37,124 @@ jobs:
           php-version: '8.2'
           extensions: sodium, pdo_sqlite
 
-      - name: Version must match the tag
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Tests
+        run: |
+          set -euo pipefail
+          php src/matova-hbook-api/tests/run.php
+          node --test tools/rollout.test.mjs
+
+      - name: Is this a new version?
         id: ver
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          IN_SRC=$(grep -oP "define\('MHA_VERSION', '\K[^']+" src/matova-hbook-api/matova-hbook-api.php)
-          test "$VERSION" = "$IN_SRC" || { echo "::error::tag $VERSION != MHA_VERSION $IN_SRC"; exit 1; }
+          VERSION=$(grep -oP "define\('MHA_VERSION', '\K[^']+" src/matova-hbook-api/matova-hbook-api.php)
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::bad MHA_VERSION '$VERSION'"; exit 1; }
+          HEADER=$(grep -oP '^\s*\*\s*Version:\s*\K\S+' src/matova-hbook-api/matova-hbook-api.php | head -1)
+          test "$HEADER" = "$VERSION" || { echo "::error::plugin header version $HEADER != MHA_VERSION $VERSION"; exit 1; }
+          PUBLISHED=$(jq -r '[.version, .rollout.default.version, .rollout.candidate.release.version] | map(select(. != null)) | .[]' update.json | sort -V | tail -1)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null || [ "$(printf '%s\n%s\n' "$PUBLISHED" "$VERSION" | sort -V | tail -1)" != "$VERSION" ] || [ "$PUBLISHED" = "$VERSION" ]; then
+            echo "new=false" >> "$GITHUB_OUTPUT"; echo "Version $VERSION is already released (latest published: $PUBLISHED) — tests only."
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"; echo "Releasing $VERSION (latest published: $PUBLISHED)."
+          fi
 
-      - name: Tests
-        run: php src/matova-hbook-api/tests/run.php
-
-      - name: Source must trust the signer's key
-        run: |
-          set -euo pipefail
-          KEYS=$(curl -fsS "$SIGNER_URL")
-          CUR=$(echo "$KEYS" | jq -r '.public_keys.current // empty')
-          test -n "$CUR" || { echo "::error::signer has no key yet (run init on the signer first)"; exit 1; }
-          grep -qF "const PUBKEY_B64 = '$CUR';" src/matova-hbook-api/includes/class-mha-updater.php \
-            || { echo "::error::PUBKEY_B64 in the source is not the signer's current public key — sites could not verify this release"; exit 1; }
-
-      - name: Build ZIP
-        id: zip
-        run: |
-          set -euo pipefail
-          rm -f matova-hbook-api.zip
-          (cd src && zip -qr ../matova-hbook-api.zip matova-hbook-api -x '*/tests-live/*' '*/.wproot/*')
-          echo "sha256=$(sha256sum matova-hbook-api.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-
-      - name: Sign (GitHub OIDC → managed signer)
-        id: sign
+      - name: Identity token for the signer
+        if: steps.ver.outputs.new == 'true'
+        id: oidc
         run: |
           set -euo pipefail
           TOKEN=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE" | jq -r '.value')
           echo "::add-mask::$TOKEN"
-          RESP=$(curl -fsS -X POST "$SIGNER_URL" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      # The key is created inside the Vault on first use. Only its PUBLIC half
+      # is written into the source, automatically, the first time.
+      - name: Source trusts the signer's key
+        if: steps.ver.outputs.new == 'true'
+        run: |
+          set -euo pipefail
+          PUB=$(curl -fsS -X POST "$SIGNER_URL" -H "Authorization: Bearer ${{ steps.oidc.outputs.token }}" -H "Content-Type: application/json" \
+            --data '{"action":"init"}' | jq -r '.public_keys.current // empty')
+          [[ "$PUB" =~ ^[A-Za-z0-9+/]{43}=$ ]] || { echo "::error::signer returned no public key"; exit 1; }
+          if grep -qF "const PUBKEY_B64 = '$PUB';" "$UPDATER"; then exit 0; fi
+          if grep -qF "const PUBKEY_NEXT_B64 = '$PUB';" "$UPDATER"; then exit 0; fi
+          grep -qF "const PUBKEY_B64 = '';" "$UPDATER" \
+            || { echo "::error::the source trusts a different key than the signer holds — rotate with PUBKEY_NEXT_B64 first"; exit 1; }
+          sed -i "s#const PUBKEY_B64 = '';#const PUBKEY_B64 = '$PUB';#" "$UPDATER"
+          git config user.name "matova-release"; git config user.email "release@users.noreply.github.com"
+          git commit -qam "Trust the managed release-signing public key"
+          git push origin HEAD:main
+
+      - name: Build ZIP
+        if: steps.ver.outputs.new == 'true'
+        id: zip
+        run: |
+          set -euo pipefail
+          ZIP="$RUNNER_TEMP/matova-hbook-api.zip"
+          (cd src && zip -qr "$ZIP" matova-hbook-api -x '*/tests/*' '*/tests-live/*' '*/.wproot/*')
+          echo "path=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$ZIP" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Sign (GitHub OIDC → managed signer)
+        if: steps.ver.outputs.new == 'true'
+        id: sign
+        run: |
+          set -euo pipefail
+          RESP=$(curl -fsS -X POST "$SIGNER_URL" -H "Authorization: Bearer ${{ steps.oidc.outputs.token }}" -H "Content-Type: application/json" \
             --data "{\"version\":\"${{ steps.ver.outputs.version }}\",\"sha256\":\"${{ steps.zip.outputs.sha256 }}\"}")
           SIG=$(echo "$RESP" | jq -r '.signature // empty')
           test -n "$SIG" || { echo "::error::signer refused"; echo "$RESP" | jq 'del(.signature)'; exit 1; }
           echo "signature=$SIG" >> "$GITHUB_OUTPUT"
 
       - name: Verify the signature exactly as a site would
+        if: steps.ver.outputs.new == 'true'
         run: |
           set -euo pipefail
           php -r '
             define("ABSPATH", "/x/"); class WP_Error {}
-            require "src/matova-hbook-api/includes/class-mha-updater.php";
-            $msg = MHA_Updater::signed_message($argv[1], file_get_contents("matova-hbook-api.zip"));
+            require getenv("UPDATER");
+            $msg = MHA_Updater::signed_message($argv[1], file_get_contents($argv[3]));
             exit(MHA_Updater::signature_trusted($msg, $argv[2]) ? 0 : 1);
-          ' "${{ steps.ver.outputs.version }}" "${{ steps.sign.outputs.signature }}" \
+          ' "${{ steps.ver.outputs.version }}" "${{ steps.sign.outputs.signature }}" "${{ steps.zip.outputs.path }}" \
             || { echo "::error::signature does not verify with the keys in the source"; exit 1; }
 
-      # Staged rollout: the signed ZIP and manifest become a GitHub Release.
-      # Sites do NOT see it yet. Install the release ZIP on the test property,
-      # check it, then run the "Promote release" workflow to publish to main
-      # (which is what all sites read for updates).
-      - name: Create GitHub Release (staged, not yet visible to sites)
+      - name: Publish the GitHub Release
+        if: steps.ver.outputs.new == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          CHANGELOG=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME" | head -c 1500)
-          jq -n --arg v "${{ steps.ver.outputs.version }}" --arg sig "${{ steps.sign.outputs.signature }}" \
-                --arg sha "${{ steps.zip.outputs.sha256 }}" --arg log "$CHANGELOG" \
-            '{version:$v, download_url:"https://raw.githubusercontent.com/jakubmatuska-ops/matova-hbook-api/main/matova-hbook-api.zip",
-              requires:"5.8", tested:"6.7", requires_php:"7.4", sha256:$sha, signature:$sig, changelog:$log}' > update.json
-          gh release create "$GITHUB_REF_NAME" matova-hbook-api.zip update.json \
-            --title "${{ steps.ver.outputs.version }} (signed, staged)" --notes "$CHANGELOG" --prerelease
+          git log -1 --pretty=%B | head -c 1500 > "$RUNNER_TEMP/changelog.txt"
+          gh release create "v$VERSION" "${{ steps.zip.outputs.path }}" --target "$(git rev-parse HEAD)" \
+            --title "$VERSION (signed)" --notes-file "$RUNNER_TEMP/changelog.txt"
+          # The exact bytes sites will download must be the bytes that were signed.
+          curl -fsSL -o "$RUNNER_TEMP/check.zip" "https://github.com/${{ github.repository }}/releases/download/v$VERSION/matova-hbook-api.zip"
+          test "$(sha256sum "$RUNNER_TEMP/check.zip" | cut -d' ' -f1)" = "${{ steps.zip.outputs.sha256 }}"
+
+      # Sites do not get the release from this step. It only starts the staged
+      # rollout; the Rollout workflow assigns it to the test property first.
+      - name: Start the staged rollout
+        if: steps.ver.outputs.new == 'true'
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          jq -n --arg v "$VERSION" --arg sig "${{ steps.sign.outputs.signature }}" --arg sha "${{ steps.zip.outputs.sha256 }}" \
+            --arg url "https://github.com/${{ github.repository }}/releases/download/v$VERSION/matova-hbook-api.zip" \
+            '{version:$v, download_url:$url, sha256:$sha, signature:$sig}' > "$RUNNER_TEMP/release.json"
+          git config user.name "matova-release"; git config user.email "release@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git fetch -q origin main && git reset -q --hard origin/main
+            node tools/rollout-cli.mjs start update.json "$RUNNER_TEMP/release.json" "$RUNNER_TEMP/changelog.txt"
+            git add update.json && git commit -qm "Start staged rollout of $VERSION"
+            git push origin HEAD:main && break
+            test "$attempt" -lt 3 || exit 1
+            sleep 5
+          done
+          node tools/rollout-cli.mjs describe update.json >> "$GITHUB_STEP_SUMMARY"

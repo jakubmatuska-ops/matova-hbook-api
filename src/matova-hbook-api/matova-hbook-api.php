@@ -34,6 +34,7 @@ require_once MHA_DIR . 'includes/controllers/class-mha-guests-controller.php';
 require_once MHA_DIR . 'includes/controllers/class-mha-payments-controller.php';
 require_once MHA_DIR . 'includes/controllers/class-mha-operations-controller.php';
 require_once MHA_DIR . 'includes/controllers/class-mha-relay-controller.php';
+require_once MHA_DIR . 'includes/controllers/class-mha-update-controller.php';
 // Switched-off legacy namespaces lose their routes (reversible, no file changes).
 add_filter('rest_endpoints', ['MHA_Relay_Controller', 'filter_endpoints'], 999);
 require_once MHA_DIR . 'includes/class-mha-plugin.php';

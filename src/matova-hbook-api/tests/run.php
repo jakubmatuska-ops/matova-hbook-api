@@ -667,6 +667,28 @@ echo str_repeat('-', 64) . "\n";
 foreach ($GLOBALS['__area_counts'] as $name => $pc) {
     printf("  %-22s pass %-4d fail %-4d\n", $name, $pc[0], $pc[1]);
 }
+/* ---------------------------------------------- staged rollout: which release a site takes */
+echo "\n[staged rollout — release selection]\n";
+(function () {
+    $rel = function ($v) { return ['version' => $v, 'download_url' => "https://example.test/$v.zip", 'signature' => 's']; };
+    $m = ['version' => '2.4.0', 'download_url' => 'https://example.test/top.zip', 'requires' => '5.8',
+          'rollout' => ['default' => $rel('2.4.0'), 'by_site' => ['chatkyborny.cz' => $rel('2.4.1')]]];
+    $r = MHA_Updater::release_for_site($m, 'chatkyborny.cz');
+    ok($r && $r['version'] === '2.4.1', 'the test property takes the release assigned to it');
+    ok($r['requires'] === '5.8', 'shared fields are inherited');
+    $r = MHA_Updater::release_for_site($m, 'kempslunicko.cz');
+    ok($r && $r['version'] === '2.4.0', 'a live property not yet reached stays on the default release');
+    $m2 = $m; unset($m2['rollout']['default']);
+    ok(MHA_Updater::release_for_site($m2, 'kempslunicko.cz') === null, 'no default and not assigned ⇒ nothing offered (top level is ignored once staging exists)');
+    $m3 = ['version' => '2.3.3', 'download_url' => 'https://example.test/top.zip'];
+    $r = MHA_Updater::release_for_site($m3, 'kempslunicko.cz');
+    ok($r && $r['version'] === '2.3.3', 'a manifest without staging is read as before');
+    $m4 = $m; $m4['rollout']['by_site']['chatkyborny.cz'] = ['version' => '2.4.1'];
+    ok(MHA_Updater::release_for_site($m4, 'chatkyborny.cz') === null, 'an incomplete assignment offers nothing');
+    ok(MHA_Updater::release_for_site(null) === null && MHA_Updater::release_for_site('x') === null, 'garbage manifest offers nothing');
+    ok(MHA_Updater::site_host() === 'example.test', 'site host is derived from the site address');
+})();
+
 echo str_repeat('-', 64) . "\n";
 $total = $GLOBALS['__pass'] + $GLOBALS['__fail'];
 printf("  TOTAL assertions: %d   PASS: %d   FAIL: %d\n", $total, $GLOBALS['__pass'], $GLOBALS['__fail']);
