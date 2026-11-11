@@ -28,11 +28,12 @@
         "signature": "DArzHobF7t8NR0HgAXYxLDcEAsHFrTsUNmF2B1Gzk7Xkz8y3RmiHqD2AbEnr0KzwVWjiCohoVor8ezrzk7eBAQ=="
       },
       "started_at": "2026-11-11T11:12:19.482Z",
-      "stage": 1,
-      "phase": "soak",
-      "phase_at": "2026-11-11T14:58:12.222Z",
+      "stage": 2,
+      "phase": "assign",
+      "phase_at": "2026-11-11T16:04:58.769Z",
       "verified": {
-        "borny": "2026-11-11T14:41:25.223Z"
+        "borny": "2026-11-11T14:41:25.223Z",
+        "passage": "2026-11-11T16:04:58.769Z"
       },
       "baseline": {
         "borny": {
