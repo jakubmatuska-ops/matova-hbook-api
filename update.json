@@ -26,11 +26,21 @@
       "phase": "update",
       "phase_at": "2026-11-11T11:12:38.707Z",
       "verified": {},
-      "baseline": {},
+      "baseline": {
+        "borny": {
+          "status": "live",
+          "note": "live",
+          "block": "live",
+          "payment": "live",
+          "guest": "live",
+          "create": "live",
+          "modify": "live"
+        }
+      },
       "strikes": 0,
       "halted": null,
       "done_at": null,
-      "note": null
+      "note": "borny: waiting for the first install from WordPress (build 2.3.3 has no remote update)"
     }
   },
   "sha256": "78cb15efde4ce7aca2a6bbf971b940e22f9be85a0635bdebd679cd9e126a6c9e",
