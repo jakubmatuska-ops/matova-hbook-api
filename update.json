@@ -40,13 +40,14 @@
         "signature": "DArzHobF7t8NR0HgAXYxLDcEAsHFrTsUNmF2B1Gzk7Xkz8y3RmiHqD2AbEnr0KzwVWjiCohoVor8ezrzk7eBAQ=="
       },
       "started_at": "2026-11-11T11:12:19.482Z",
-      "stage": 3,
-      "phase": "soak",
-      "phase_at": "2026-11-11T17:45:54.555Z",
+      "stage": 4,
+      "phase": "assign",
+      "phase_at": "2026-11-11T18:19:25.382Z",
       "verified": {
         "borny": "2026-11-11T14:41:25.223Z",
         "passage": "2026-11-11T16:04:58.769Z",
-        "srdicko": "2026-11-11T17:29:07.138Z"
+        "srdicko": "2026-11-11T17:29:07.138Z",
+        "slunicko": "2026-11-11T18:19:25.382Z"
       },
       "baseline": {
         "borny": {
