@@ -180,9 +180,16 @@ class MHA_Relay_Controller extends MHA_Controller {
                 return new WP_Error('bad_request', 'Not a legacy namespace: ' . implode(', ', $unknown), ['status' => 400]);
             }
             $clean = array_values(array_unique($want));
+            $before = self::disabled_namespaces();
             update_option(self::OPT_DISABLED, $clean, false);
             if (class_exists('MHA_Store') && method_exists('MHA_Store', 'audit')) {
-                try { MHA_Store::audit('legacy.set', 'site', 0, ['disabled' => $clean]); } catch (\Throwable $e) { /* audit is best effort */ }
+                try {
+                    MHA_Store::audit([
+                        'route' => 'PUT /legacy', 'method' => 'PUT', 'http_status' => 200,
+                        'target_type' => 'site', 'target_id' => 'legacy_namespaces',
+                        'before_json' => ['disabled' => $before], 'after_json' => ['disabled' => $clean],
+                    ]);
+                } catch (\Throwable $e) { /* audit is best effort */ }
             }
             return ['disabled' => self::disabled_namespaces()];
         });

@@ -832,7 +832,7 @@ class MHA_HBook {
      * crashed request can never leave the site locked. Returns:
      *   - the callback's result when the lock was held (or the database has no
      *     named locks at all — then behaviour is exactly as before),
-     *   - WP_Error 'busy' (HTTP 423) when another write held the lock for the
+     *   - WP_Error 'busy' (HTTP 429, retried by the client) when another write held the lock for the
      *     whole wait. Nothing was written; the caller may retry.
      */
     public static function with_inventory_lock(callable $fn) {
@@ -840,7 +840,7 @@ class MHA_HBook {
         $name = self::INVENTORY_LOCK . '_' . (isset($wpdb->prefix) ? $wpdb->prefix : '');
         $got = self::named_lock('GET_LOCK', $name, self::INVENTORY_LOCK_WAIT);
         if ($got === 0) {
-            return new WP_Error('busy', 'Jiný zápis rezervace právě probíhá. Zkuste to prosím znovu.', ['status' => 423]);
+            return new WP_Error('busy', 'Jiný zápis rezervace právě probíhá. Zkuste to prosím znovu.', ['status' => 429]);
         }
         try {
             return $fn();

@@ -51,7 +51,9 @@ add_action('plugins_loaded', function () {
     // Boot late so HBook (and its globals) are available for the adapter + outbox hooks.
     MHA_Plugin::instance()->boot();
     if (is_admin() && class_exists('MHA_Admin')) { MHA_Admin::boot(); }
-    if (is_admin() && class_exists('MHA_Updater')) { MHA_Updater::init(); }
+    // Always on: background auto-updates and WP-CLI run outside wp-admin, and
+    // the signature check must guard those installs too.
+    if (class_exists('MHA_Updater')) { MHA_Updater::init(); }
     if (class_exists('MHA_TestGuard')) { MHA_TestGuard::boot(); }
     if (class_exists('MHA_Legacy_Shim')) { MHA_Legacy_Shim::boot(); }
 }, 30);

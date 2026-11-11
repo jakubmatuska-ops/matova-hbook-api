@@ -56,7 +56,10 @@ class MHA_Payments_Controller extends MHA_Controller {
         $id = (int) $req->get_param('id');
         return $this->mutate(
             $req, 'POST /reservations/{id}/payments', 'reservation', $id,
-            function () use ($id) { return MHA_HBook::reservation($id); },
+            function () use ($req, $id) {
+                // Audit the record that is actually written (parent for groups).
+                return ((bool) $req->get_param('is_parent')) ? MHA_HBook::parent_reservation($id) : MHA_HBook::reservation($id);
+            },
             function () use ($req, $id) {
                 $is_parent = (bool) $req->get_param('is_parent');
 
@@ -114,7 +117,11 @@ class MHA_Payments_Controller extends MHA_Controller {
                     'online'         => 'no',
                     'source'         => 'matova/v2',
                 ];
-                return MHA_HBook::add_payment($id, $is_parent, $payment);
+                // Serialised with other reservation writes: two payments landing on
+                // the same (parent) reservation at once must not overwrite each other.
+                return MHA_HBook::with_inventory_lock(function () use ($id, $is_parent, $payment) {
+                    return MHA_HBook::add_payment($id, $is_parent, $payment);
+                });
             }
         );
     }

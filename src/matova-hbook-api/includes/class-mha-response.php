@@ -14,6 +14,7 @@ class MHA_Response {
         'not_found'      => 404,
         'conflict'       => 409,
         'rate_limited'   => 429,
+        'busy'           => 429, // another reservation write holds the lock; nothing written, safe to retry
         'write_disabled' => 503,
         'upstream_error' => 502,
         'unsupported'    => 503, // 501 is intercepted as an HTML page by the WEDOS/Apache stack; 503 passes through as JSON

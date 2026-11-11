@@ -1,8 +1,13 @@
 # Release signing (from 2.4.0) — managed, no key on any computer
 
 A resort site installs a plugin update **only if `update.json` carries a valid
-signature** made by the Matova release signer. Write access to this repository
-is not enough to ship code to the sites.
+signature** made by the Matova release signer. Changing files on `main`
+(ZIP, manifest) is not enough to ship code to the sites: only a tagged release
+run can obtain a signature.
+
+**Required repository setting:** a tag ruleset that lets only the owner create
+`v*` tags. Without it, anyone who can push a tag could run a modified release
+workflow and get it signed.
 
 ## How it works
 
@@ -37,6 +42,15 @@ is not enough to ship code to the sites.
 2. Ship one release with `PUBKEY_NEXT_B64` set to it (signed by the current key).
 3. When every site runs that release, `promote` makes NEXT current; the next
    release moves it into `PUBKEY_B64`.
+
+## Creating the key (one time, automated)
+
+Run the **Bootstrap signing key** workflow. It asks the signer to create the
+key inside the Vault (if none exists) and opens a pull request that puts the
+PUBLIC key into the source. No secret is shown, stored or copied anywhere.
+`rotate` / `promote` are restricted to the backend itself or a signed-in admin;
+`promote` keeps the previous key and requires naming the release that shipped
+the next public key.
 
 ## One-time bootstrap
 
