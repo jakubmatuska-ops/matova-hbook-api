@@ -23,8 +23,8 @@
       },
       "started_at": "2026-11-11T11:12:19.482Z",
       "stage": 0,
-      "phase": "update",
-      "phase_at": "2026-11-11T11:12:38.707Z",
+      "phase": "soak",
+      "phase_at": "2026-11-11T12:35:50.001Z",
       "verified": {},
       "baseline": {
         "borny": {
@@ -40,7 +40,7 @@
       "strikes": 0,
       "halted": null,
       "done_at": null,
-      "note": "borny: waiting for the first install from WordPress (build 2.3.3 has no remote update)"
+      "note": null
     }
   },
   "sha256": "78cb15efde4ce7aca2a6bbf971b940e22f9be85a0635bdebd679cd9e126a6c9e",
