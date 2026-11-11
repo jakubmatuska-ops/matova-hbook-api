@@ -1,0 +1,102 @@
+name: Release (signed)
+
+# Runs ONLY on a pushed version tag. Builds the plugin ZIP from src/, has it
+# signed by the managed signer (GitHub OIDC — no secrets stored here) and
+# publishes ZIP + update.json to main, which is what the resort sites read.
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  SIGNER_URL: https://czjkwoyjpmyupcshwslu.supabase.co/functions/v1/plugin-release-sign
+  AUDIENCE: matova-plugin-release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: sodium, pdo_sqlite
+
+      - name: Version must match the tag
+        id: ver
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          IN_SRC=$(grep -oP "define\('MHA_VERSION', '\K[^']+" src/matova-hbook-api/matova-hbook-api.php)
+          test "$VERSION" = "$IN_SRC" || { echo "::error::tag $VERSION != MHA_VERSION $IN_SRC"; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Tests
+        run: php src/matova-hbook-api/tests/run.php
+
+      - name: Source must trust the signer's key
+        run: |
+          set -euo pipefail
+          KEYS=$(curl -fsS "$SIGNER_URL")
+          CUR=$(echo "$KEYS" | jq -r '.public_keys.current // empty')
+          test -n "$CUR" || { echo "::error::signer has no key yet (run init on the signer first)"; exit 1; }
+          grep -qF "const PUBKEY_B64 = '$CUR';" src/matova-hbook-api/includes/class-mha-updater.php \
+            || { echo "::error::PUBKEY_B64 in the source is not the signer's current public key — sites could not verify this release"; exit 1; }
+
+      - name: Build ZIP
+        id: zip
+        run: |
+          set -euo pipefail
+          rm -f matova-hbook-api.zip
+          (cd src && zip -qr ../matova-hbook-api.zip matova-hbook-api -x '*/tests-live/*' '*/.wproot/*')
+          echo "sha256=$(sha256sum matova-hbook-api.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Sign (GitHub OIDC → managed signer)
+        id: sign
+        run: |
+          set -euo pipefail
+          TOKEN=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE" | jq -r '.value')
+          echo "::add-mask::$TOKEN"
+          RESP=$(curl -fsS -X POST "$SIGNER_URL" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            --data "{\"version\":\"${{ steps.ver.outputs.version }}\",\"sha256\":\"${{ steps.zip.outputs.sha256 }}\"}")
+          SIG=$(echo "$RESP" | jq -r '.signature // empty')
+          test -n "$SIG" || { echo "::error::signer refused"; echo "$RESP" | jq 'del(.signature)'; exit 1; }
+          echo "signature=$SIG" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the signature exactly as a site would
+        run: |
+          set -euo pipefail
+          php -r '
+            define("ABSPATH", "/x/"); class WP_Error {}
+            require "src/matova-hbook-api/includes/class-mha-updater.php";
+            $msg = MHA_Updater::signed_message($argv[1], file_get_contents("matova-hbook-api.zip"));
+            exit(MHA_Updater::signature_trusted($msg, $argv[2]) ? 0 : 1);
+          ' "${{ steps.ver.outputs.version }}" "${{ steps.sign.outputs.signature }}" \
+            || { echo "::error::signature does not verify with the keys in the source"; exit 1; }
+
+      - name: Publish ZIP + manifest to main
+        run: |
+          set -euo pipefail
+          CHANGELOG=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME" | head -c 1500)
+          jq -n --arg v "${{ steps.ver.outputs.version }}" --arg sig "${{ steps.sign.outputs.signature }}" \
+                --arg sha "${{ steps.zip.outputs.sha256 }}" --arg log "$CHANGELOG" \
+            '{version:$v, download_url:"https://raw.githubusercontent.com/jakubmatuska-ops/matova-hbook-api/main/matova-hbook-api.zip",
+              requires:"5.8", tested:"6.7", requires_php:"7.4", sha256:$sha, signature:$sig, changelog:$log}' > update.json
+          git config user.name "matova-release"
+          git config user.email "release@users.noreply.github.com"
+          git fetch origin main
+          git checkout -B publish origin/main
+          git checkout "$GITHUB_SHA" -- src
+          git add matova-hbook-api.zip update.json src
+          git commit -m "Release ${{ steps.ver.outputs.version }} (signed)"
+          git push origin publish:main
