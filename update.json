@@ -6,32 +6,7 @@
   "requires_php": "7.4",
   "changelog": "Trust the managed release-signing public key\n\n",
   "rollout": {
-    "by_site": {
-      "chatkyborny.cz": {
-        "version": "2.4.0",
-        "download_url": "https://github.com/jakubmatuska-ops/matova-hbook-api/releases/download/v2.4.0/matova-hbook-api.zip",
-        "sha256": "78cb15efde4ce7aca2a6bbf971b940e22f9be85a0635bdebd679cd9e126a6c9e",
-        "signature": "DArzHobF7t8NR0HgAXYxLDcEAsHFrTsUNmF2B1Gzk7Xkz8y3RmiHqD2AbEnr0KzwVWjiCohoVor8ezrzk7eBAQ=="
-      },
-      "passagesplavy.cz": {
-        "version": "2.4.0",
-        "download_url": "https://github.com/jakubmatuska-ops/matova-hbook-api/releases/download/v2.4.0/matova-hbook-api.zip",
-        "sha256": "78cb15efde4ce7aca2a6bbf971b940e22f9be85a0635bdebd679cd9e126a6c9e",
-        "signature": "DArzHobF7t8NR0HgAXYxLDcEAsHFrTsUNmF2B1Gzk7Xkz8y3RmiHqD2AbEnr0KzwVWjiCohoVor8ezrzk7eBAQ=="
-      },
-      "kempsrdicko.cz": {
-        "version": "2.4.0",
-        "download_url": "https://github.com/jakubmatuska-ops/matova-hbook-api/releases/download/v2.4.0/matova-hbook-api.zip",
-        "sha256": "78cb15efde4ce7aca2a6bbf971b940e22f9be85a0635bdebd679cd9e126a6c9e",
-        "signature": "DArzHobF7t8NR0HgAXYxLDcEAsHFrTsUNmF2B1Gzk7Xkz8y3RmiHqD2AbEnr0KzwVWjiCohoVor8ezrzk7eBAQ=="
-      },
-      "kempslunicko.cz": {
-        "version": "2.4.0",
-        "download_url": "https://github.com/jakubmatuska-ops/matova-hbook-api/releases/download/v2.4.0/matova-hbook-api.zip",
-        "sha256": "78cb15efde4ce7aca2a6bbf971b940e22f9be85a0635bdebd679cd9e126a6c9e",
-        "signature": "DArzHobF7t8NR0HgAXYxLDcEAsHFrTsUNmF2B1Gzk7Xkz8y3RmiHqD2AbEnr0KzwVWjiCohoVor8ezrzk7eBAQ=="
-      }
-    },
+    "by_site": {},
     "candidate": {
       "release": {
         "version": "2.4.0",
@@ -41,7 +16,7 @@
       },
       "started_at": "2026-11-11T11:12:19.482Z",
       "stage": 4,
-      "phase": "assign",
+      "phase": "done",
       "phase_at": "2026-11-11T18:19:25.382Z",
       "verified": {
         "borny": "2026-11-11T14:41:25.223Z",
@@ -62,8 +37,14 @@
       },
       "strikes": 0,
       "halted": null,
-      "done_at": null,
+      "done_at": "2026-11-11T18:27:46.605Z",
       "note": null
+    },
+    "default": {
+      "version": "2.4.0",
+      "download_url": "https://github.com/jakubmatuska-ops/matova-hbook-api/releases/download/v2.4.0/matova-hbook-api.zip",
+      "sha256": "78cb15efde4ce7aca2a6bbf971b940e22f9be85a0635bdebd679cd9e126a6c9e",
+      "signature": "DArzHobF7t8NR0HgAXYxLDcEAsHFrTsUNmF2B1Gzk7Xkz8y3RmiHqD2AbEnr0KzwVWjiCohoVor8ezrzk7eBAQ=="
     }
   },
   "sha256": "78cb15efde4ce7aca2a6bbf971b940e22f9be85a0635bdebd679cd9e126a6c9e",
