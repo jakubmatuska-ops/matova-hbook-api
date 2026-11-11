@@ -1,0 +1,1765 @@
+openapi: 3.1.0
+info:
+  title: Matova HBook API
+  version: 2.0.0-dev
+  description: >
+    Unified, versioned HBook API (namespace `matova/v2`) deployed identically to
+    all four Matova Group resorts (slunicko, srdicko, borny, passage) with
+    per-site config. HBook remains the source of truth; reads query the
+    `{prefix}hb_*` tables, writes call HBook's native methods only. Additive to
+    the legacy namespaces (resort-dashboard/v1, hbapi/v1, matova-hbook/v1, ks/v1)
+    during migration.
+
+
+    Auth is backend-to-backend: `Authorization: Bearer <key>` only (query-string
+    keys are rejected). Write operations additionally require an `Idempotency-Key`
+    header and a sufficient scope. Each operation documents the scope it needs via
+    the `x-scope` extension (`read` | `ops-write` | `admin`).
+  contact:
+    name: Matova Group
+servers:
+  - url: https://{resort-host}/wp-json/matova/v2
+    description: Per-resort WordPress REST root
+    variables:
+      resort-host:
+        default: kempslunicko.cz
+        description: >
+          Host of the target resort. Known hosts: kempslunicko.cz (slunicko),
+          kempsrdicko.cz (srdicko), chatkyborny.cz (borny), and the Passage host.
+security:
+  - MatovaBearer: []
+tags:
+  - name: meta
+    description: Service metadata and health
+  - name: reservations
+    description: Reservation reads and scoped writes
+  - name: guests
+    description: Guest (customer) records
+  - name: availability
+    description: Availability, units, blocks and rules
+  - name: pricing
+    description: Price quotes and extras
+  - name: operations
+    description: Front-desk and management views
+  - name: events
+    description: Outbox pull-sync
+paths:
+  /meta:
+    get:
+      tags: [meta]
+      operationId: getMeta
+      summary: Resort registry + capability metadata
+      description: |
+        Returns the resolved per-site registry (resort_id, timezone, currency,
+        season, vat_payer, units_total) and v2 capability flags.
+
+        x-scope: read
+      x-scope: read
+      responses:
+        '200':
+          description: Metadata envelope
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Meta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /health:
+    get:
+      tags: [meta]
+      operationId: getHealth
+      summary: Public health probe
+      description: |
+        Liveness probe. Does not require authentication.
+
+        x-scope: read
+      x-scope: read
+      security: []
+      responses:
+        '200':
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          status:
+                            type: string
+                            examples: [ok]
+                          hbook_available:
+                            type: boolean
+  /reservations:
+    get:
+      tags: [reservations]
+      operationId: listReservations
+      summary: List reservations
+      description: |
+        Lists reservations in a date window with optional status / incremental
+        filters.
+
+        x-scope: read
+      x-scope: read
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/ReservationStatus'
+        - name: updated_since
+          in: query
+          description: ISO-8601 timestamp; return only reservations updated at/after it.
+          schema:
+            type: string
+            format: date-time
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Reservation list envelope
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Reservation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+    post:
+      tags: [reservations]
+      operationId: createReservation
+      summary: Create a reservation (admin, gated)
+      description: |
+        Creates a reservation through HBook's native `hb_create_resa()`
+        orchestration; price is computed by `HbPriceCalc::get_price()`, never
+        reimplemented. Gated OFF by default and untested against a live HBook
+        (see CAPABILITIES.md). Requires an `Idempotency-Key` header.
+
+        x-scope: admin
+      x-scope: admin
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReservationCreate'
+      responses:
+        '201':
+          description: Created (or would_create in dry_run)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Reservation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/WriteDisabled'
+  /reservations/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ReservationId'
+    get:
+      tags: [reservations]
+      operationId: getReservation
+      summary: Get one reservation
+      description: |
+        x-scope: read
+      x-scope: read
+      responses:
+        '200':
+          description: Reservation envelope
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Reservation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+    patch:
+      tags: [reservations]
+      operationId: modifyReservation
+      summary: Modify a reservation's dates/accommodation (admin, gated)
+      description: |
+        Changes dates via `update_resa_dates()` and/or accommodation via
+        `update_resa_accom()` (resets uid, re-blocks) and recomputes price via
+        `HbPriceCalc`. Gated OFF by default and untested against a live HBook.
+        Requires an `Idempotency-Key` header.
+
+        x-scope: admin
+      x-scope: admin
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReservationModify'
+      responses:
+        '200':
+          description: Modified (or would_modify in dry_run)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Reservation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/WriteDisabled'
+  /reservations/search:
+    get:
+      tags: [reservations]
+      operationId: searchReservations
+      summary: Search reservations
+      description: |
+        Free-text search across guest name/email, alphanum_id and reservation id.
+
+        x-scope: read
+      x-scope: read
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        '200':
+          description: Reservation list envelope
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Reservation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /reservations/{id}/status:
+    parameters:
+      - $ref: '#/components/parameters/ReservationId'
+    post:
+      tags: [reservations]
+      operationId: setReservationStatus
+      summary: Confirm or cancel a reservation
+      description: |
+        Calls `update_resa_status($id,$status)` (fires HBook hooks; cancel deletes
+        linked blocks). Group reservations cancel via `cancel_parent_resa()`.
+        Only `confirmed` and `cancelled` are writable. Requires an
+        `Idempotency-Key` header and honors the write-mode gate.
+
+        x-scope: ops-write
+      x-scope: ops-write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [confirmed, cancelled]
+      responses:
+        '200':
+          description: Status updated (or would_update in dry_run)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Reservation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/WriteDisabled'
+  /reservations/{id}/notes:
+    parameters:
+      - $ref: '#/components/parameters/ReservationId'
+    post:
+      tags: [reservations]
+      operationId: addReservationNote
+      summary: Set the admin comment on a reservation
+      description: |
+        Calls `update_resa_comment($id,$text)`. Requires an `Idempotency-Key`
+        header and honors the write-mode gate.
+
+        x-scope: ops-write
+      x-scope: ops-write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [note]
+              properties:
+                note:
+                  type: string
+      responses:
+        '200':
+          description: Note stored (or would_update in dry_run)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Reservation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/WriteDisabled'
+  /reservations/{id}/payments:
+    parameters:
+      - $ref: '#/components/parameters/ReservationId'
+    post:
+      tags: [reservations]
+      operationId: addReservationPayment
+      summary: Add or refund a payment
+      description: |
+        Appends to HBook's `payments_logs` via
+        `HbDataBaseActions::add_resa_payment()` (and `HbUtils::update_resa_payments()`);
+        refunds use the delete/refund path. Never writes the flat `paid` column.
+        On HBook 2.0.9 sites this is `write_disabled` (feature not present).
+        Requires an `Idempotency-Key` header and honors the write-mode gate.
+
+        x-scope: ops-write
+      x-scope: ops-write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentCreate'
+      responses:
+        '200':
+          description: Payment appended (or would_add in dry_run)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Reservation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/WriteDisabled'
+  /guests/{id}:
+    parameters:
+      - $ref: '#/components/parameters/GuestId'
+    get:
+      tags: [guests]
+      operationId: getGuest
+      summary: Get a guest record
+      description: |
+        x-scope: read
+      x-scope: read
+      responses:
+        '200':
+          description: Guest envelope
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Guest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+    patch:
+      tags: [guests]
+      operationId: updateGuest
+      summary: Update a guest record
+      description: |
+        Updates the `hb_customers.info` JSON via HBook's `update_customer*`
+        methods. Requires an `Idempotency-Key` header and honors the write-mode
+        gate.
+
+        x-scope: ops-write
+      x-scope: ops-write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GuestUpdate'
+      responses:
+        '200':
+          description: Guest updated (or would_update in dry_run)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Guest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/WriteDisabled'
+  /availability:
+    get:
+      tags: [availability]
+      operationId: getAvailability
+      summary: Availability per date
+      description: |
+        Wraps `get_unavailable_accom_num_per_date()` /
+        `get_available_accom_occupancy_quantity_per_dates()`.
+
+        x-scope: read
+      x-scope: read
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - name: accom_id
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Availability envelope
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AvailabilityDay'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /units:
+    get:
+      tags: [availability]
+      operationId: getUnits
+      summary: Unit catalogue
+      description: |
+        Accommodations (posts) and their numbered units from `hb_accom_num_name`.
+
+        x-scope: read
+      x-scope: read
+      responses:
+        '200':
+          description: Unit list envelope
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Unit'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /blocked:
+    get:
+      tags: [availability]
+      operationId: listBlocks
+      summary: List blocked ranges
+      description: |
+        Reads `hb_accom_blocked` in a date window.
+
+        x-scope: read
+      x-scope: read
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        '200':
+          description: Block list envelope
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Block'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+    post:
+      tags: [availability]
+      operationId: createBlock
+      summary: Create a manual block
+      description: |
+        Calls `add_blocked_accom(...)`; fires `hb_blocked_accom_updated`.
+        Requires an `Idempotency-Key` header and honors the write-mode gate.
+
+        x-scope: ops-write
+      x-scope: ops-write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockCreate'
+      responses:
+        '201':
+          description: Block created (or would_create in dry_run)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Block'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/WriteDisabled'
+  /blocked/{id}:
+    parameters:
+      - $ref: '#/components/parameters/BlockId'
+    delete:
+      tags: [availability]
+      operationId: releaseBlock
+      summary: Release a manual block
+      description: |
+        Deletes a block; refuses when `linked_resa_id > 0` (reservation-owned).
+        Fires `hb_blocked_accom_updated`. Requires an `Idempotency-Key` header
+        and honors the write-mode gate.
+
+        x-scope: ops-write
+      x-scope: ops-write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Block released (or would_release in dry_run)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          id:
+                            type: integer
+                          released:
+                            type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/WriteDisabled'
+  /rules:
+    get:
+      tags: [availability]
+      operationId: getRules
+      summary: Booking rules, rates and seasons
+      description: |
+        Reads `hb_booking_rules`, `hb_rates*` and `hb_seasons*`.
+
+        x-scope: read
+      x-scope: read
+      responses:
+        '200':
+          description: Rules envelope
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Rules'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /pricing/quote:
+    get:
+      tags: [pricing]
+      operationId: getQuote
+      summary: Price quote
+      description: |
+        Wraps `HbPriceCalc::get_price()` for a candidate stay.
+
+        x-scope: read
+      x-scope: read
+      parameters:
+        - name: accom_id
+          in: query
+          required: true
+          schema:
+            type: integer
+        - name: check_in
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: check_out
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: adults
+          in: query
+          schema:
+            type: integer
+            default: 2
+        - name: children
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Quote envelope
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Quote'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /extras:
+    get:
+      tags: [pricing]
+      operationId: getExtras
+      summary: Extras, options and fees
+      description: |
+        Reads `hb_options` (+ `_choices`) and `hb_fees`.
+
+        x-scope: read
+      x-scope: read
+      responses:
+        '200':
+          description: Extras envelope
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Extra'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /day/{date}:
+    parameters:
+      - name: date
+        in: path
+        required: true
+        schema:
+          type: string
+          format: date
+    get:
+      tags: [operations]
+      operationId: getDaySummary
+      summary: Day summary (arrivals, departures, in-house)
+      description: |
+        x-scope: read
+      x-scope: read
+      responses:
+        '200':
+          description: Day summary envelope
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/DaySummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /operations/occupancy:
+    get:
+      tags: [operations]
+      operationId: getOccupancy
+      summary: Occupancy over a window
+      description: |
+        x-scope: read
+      x-scope: read
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        '200':
+          description: Occupancy envelope
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            date:
+                              type: string
+                              format: date
+                            occupied:
+                              type: integer
+                            total:
+                              type: integer
+                            occupancy_pct:
+                              type: number
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /operations/outstanding:
+    get:
+      tags: [operations]
+      operationId: getOutstanding
+      summary: Reservations with an outstanding balance
+      description: |
+        Reservations where amount paid is below amount due.
+
+        x-scope: read
+      x-scope: read
+      responses:
+        '200':
+          description: Outstanding envelope
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            reservation_id:
+                              type: integer
+                            amount_due:
+                              type: number
+                            amount_paid:
+                              type: number
+                            outstanding:
+                              type: number
+                            currency:
+                              type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /stats/monthly:
+    get:
+      tags: [operations]
+      operationId: getMonthlyStats
+      summary: Monthly statistics
+      description: |
+        x-scope: read
+      x-scope: read
+      parameters:
+        - name: year
+          in: query
+          required: true
+          schema:
+            type: integer
+            examples: [2026]
+      responses:
+        '200':
+          description: Monthly stats envelope
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            month:
+                              type: integer
+                              minimum: 1
+                              maximum: 12
+                            reservations:
+                              type: integer
+                            nights:
+                              type: integer
+                            revenue:
+                              type: number
+                            currency:
+                              type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /events:
+    get:
+      tags: [events]
+      operationId: getEvents
+      summary: Outbox events for pull sync
+      description: |
+        Returns ordered outbox rows (`mha_events`) with id greater than `since`.
+
+        x-scope: read
+      x-scope: read
+      parameters:
+        - name: since
+          in: query
+          description: Return events with id strictly greater than this cursor.
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Event list envelope
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OkEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Event'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+components:
+  securitySchemes:
+    MatovaBearer:
+      type: http
+      scheme: bearer
+      description: >
+        Opaque per-consumer x per-resort x scope key, sent as
+        `Authorization: Bearer <key>`. Query-string keys are rejected. Stored
+        server-side as a salted SHA-256 hash and compared with `hash_equals`.
+  parameters:
+    From:
+      name: from
+      in: query
+      required: true
+      description: Window start (inclusive).
+      schema:
+        type: string
+        format: date
+    To:
+      name: to
+      in: query
+      required: true
+      description: Window end (inclusive).
+      schema:
+        type: string
+        format: date
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 100
+    Offset:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    ReservationId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+    GuestId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+    BlockId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >
+        Caller-generated unique key for this mutation. A replay with the same key
+        returns the stored response verbatim; the same key with a different body
+        yields 409 conflict.
+      schema:
+        type: string
+        minLength: 8
+  responses:
+    BadRequest:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: Authenticated but insufficient scope
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: Target does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Conflict:
+      description: Idempotency-Key reused with a different body, or state conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    RateLimited:
+      description: Per-key rate limit exceeded
+      headers:
+        Retry-After:
+          description: Seconds until the bucket refills.
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    WriteDisabled:
+      description: >
+        Write-mode gate is off for this kind, or the HBook native method is
+        unavailable on this site's HBook version.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    Meta:
+      type: object
+      properties:
+        resort:
+          $ref: '#/components/schemas/ResortId'
+        timezone:
+          type: string
+          examples: [Europe/Prague]
+        currency:
+          type: string
+          examples: [CZK]
+        vat_payer:
+          type: boolean
+        units_total:
+          type: integer
+        season:
+          type: object
+          properties:
+            open:
+              type: string
+              format: date
+            close:
+              type: string
+              format: date
+        hbook_version:
+          type: string
+          examples: ['2.2.1']
+        capabilities:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [complete, partial, blocked]
+    ResponseMeta:
+      type: object
+      required: [resort, as_of, api, request_id]
+      properties:
+        resort:
+          $ref: '#/components/schemas/ResortId'
+        as_of:
+          type: string
+          format: date-time
+        api:
+          type: string
+          examples: ['matova/v2']
+        request_id:
+          type: string
+          format: uuid
+    OkEnvelope:
+      type: object
+      required: [ok, data, meta]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        data: {}
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    ErrorEnvelope:
+      type: object
+      required: [ok, error, meta]
+      properties:
+        ok:
+          type: boolean
+          const: false
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - bad_request
+                - unauthorized
+                - forbidden
+                - not_found
+                - conflict
+                - rate_limited
+                - write_disabled
+                - upstream_error
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+    ResortId:
+      type: string
+      enum: [slunicko, srdicko, borny, passage]
+    ReservationStatus:
+      type: string
+      enum:
+        - pending
+        - new
+        - confirmed
+        - waiting_payment
+        - cancelled
+        - multi_resa_pending
+    Reservation:
+      type: object
+      description: One reservation row from hb_resa (field names mirror §8).
+      properties:
+        id:
+          type: integer
+        check_in:
+          type: string
+          format: date
+        check_out:
+          type: string
+          format: date
+        accom_id:
+          type: integer
+        accom_num:
+          type: integer
+        adults:
+          type: integer
+        children:
+          type: integer
+        accom_price:
+          type: number
+        discount:
+          type: object
+          additionalProperties: true
+          nullable: true
+        price:
+          type: number
+        previous_price:
+          type: number
+          nullable: true
+        deposit:
+          type: number
+          nullable: true
+        paid:
+          type: number
+          description: HBook's flat paid column (read-only; never written by v2).
+        amount_to_pay:
+          type: number
+          nullable: true
+        currency:
+          type: string
+        customer_id:
+          type: integer
+        status:
+          $ref: '#/components/schemas/ReservationStatus'
+        options:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        fees:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        additional_info:
+          type: string
+          nullable: true
+        admin_comment:
+          type: string
+          nullable: true
+        lang:
+          type: string
+          nullable: true
+        coupon:
+          type: string
+          nullable: true
+        coupon_value:
+          type: number
+          nullable: true
+        payment_type:
+          type: string
+          nullable: true
+        payment_status:
+          type: string
+          nullable: true
+        payments_logs:
+          type: array
+          items:
+            $ref: '#/components/schemas/PaymentLog'
+        received_on:
+          type: string
+          format: date-time
+          nullable: true
+        updated_on:
+          type: string
+          format: date-time
+          nullable: true
+        uid:
+          type: string
+          nullable: true
+        alphanum_id:
+          type: string
+          nullable: true
+        origin:
+          type: string
+          nullable: true
+        parent_id:
+          type: integer
+          nullable: true
+        custom_info:
+          type: object
+          additionalProperties: true
+          nullable: true
+    ReservationCreate:
+      type: object
+      required: [accom_id, check_in, check_out, customer]
+      properties:
+        accom_id:
+          type: integer
+        accom_num:
+          type: integer
+          nullable: true
+        check_in:
+          type: string
+          format: date
+        check_out:
+          type: string
+          format: date
+        adults:
+          type: integer
+          default: 2
+        children:
+          type: integer
+          default: 0
+        customer:
+          $ref: '#/components/schemas/GuestInfo'
+        options:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        additional_info:
+          type: string
+    ReservationModify:
+      type: object
+      description: At least one of the groups (dates / accommodation) must be present.
+      properties:
+        check_in:
+          type: string
+          format: date
+        check_out:
+          type: string
+          format: date
+        accom_id:
+          type: integer
+        accom_num:
+          type: integer
+    PaymentLog:
+      type: object
+      description: One entry of hb_resa.payments_logs JSON.
+      properties:
+        amount:
+          type: number
+        currency:
+          type: string
+        type:
+          type: string
+          examples: [manual, gateway, refund]
+        date:
+          type: string
+          format: date-time
+        note:
+          type: string
+          nullable: true
+    PaymentCreate:
+      type: object
+      required: [amount]
+      properties:
+        amount:
+          type: number
+          description: Positive to add a payment, negative for a refund.
+        currency:
+          type: string
+          examples: [CZK]
+        type:
+          type: string
+          examples: [manual, refund]
+        note:
+          type: string
+    Guest:
+      type: object
+      description: One hb_customers row; info JSON flattened into fields.
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+          format: email
+        first_name:
+          type: string
+          nullable: true
+        last_name:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        street:
+          type: string
+          nullable: true
+        city:
+          type: string
+          nullable: true
+        zip:
+          type: string
+          nullable: true
+        country:
+          type: string
+          nullable: true
+        nb_resa:
+          type: integer
+    GuestInfo:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+        first_name:
+          type: string
+        last_name:
+          type: string
+        phone:
+          type: string
+        street:
+          type: string
+        city:
+          type: string
+        zip:
+          type: string
+        country:
+          type: string
+    GuestUpdate:
+      type: object
+      description: Subset of guest fields to merge into hb_customers.info.
+      properties:
+        email:
+          type: string
+          format: email
+        first_name:
+          type: string
+        last_name:
+          type: string
+        phone:
+          type: string
+        street:
+          type: string
+        city:
+          type: string
+        zip:
+          type: string
+        country:
+          type: string
+    AvailabilityDay:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        accom_id:
+          type: integer
+        available:
+          type: integer
+          description: Units still bookable on this date.
+        total:
+          type: integer
+    Unit:
+      type: object
+      description: From hb_accom_num_name plus accommodation post metadata.
+      properties:
+        accom_id:
+          type: integer
+        accom_num:
+          type: integer
+        num_name:
+          type: string
+        accom_title:
+          type: string
+          nullable: true
+        quantity:
+          type: integer
+          nullable: true
+        occupancy:
+          type: integer
+          nullable: true
+    Block:
+      type: object
+      description: One hb_accom_blocked row.
+      properties:
+        id:
+          type: integer
+        accom_id:
+          type: integer
+        accom_num:
+          type: integer
+          nullable: true
+        from_date:
+          type: string
+          format: date
+        to_date:
+          type: string
+          format: date
+        linked_resa_id:
+          type: integer
+          description: Greater than 0 means reservation-owned; such blocks cannot be released.
+        is_prepa_time:
+          type: boolean
+        comment:
+          type: string
+          nullable: true
+        uid:
+          type: string
+          nullable: true
+    BlockCreate:
+      type: object
+      required: [accom_id, from_date, to_date]
+      properties:
+        accom_id:
+          type: integer
+        accom_num:
+          type: integer
+          nullable: true
+        from_date:
+          type: string
+          format: date
+        to_date:
+          type: string
+          format: date
+        comment:
+          type: string
+    Quote:
+      type: object
+      description: Result of HbPriceCalc::get_price().
+      properties:
+        accom_id:
+          type: integer
+        check_in:
+          type: string
+          format: date
+        check_out:
+          type: string
+          format: date
+        nights:
+          type: integer
+        adults:
+          type: integer
+        children:
+          type: integer
+        price:
+          type: number
+        currency:
+          type: string
+        breakdown:
+          type: array
+          items:
+            type: object
+            properties:
+              date:
+                type: string
+                format: date
+              amount:
+                type: number
+              season:
+                type: string
+                nullable: true
+    Extra:
+      type: object
+      description: An hb_options choice or an hb_fees row.
+      properties:
+        id:
+          type: integer
+        kind:
+          type: string
+          enum: [option, fee]
+        name:
+          type: string
+        amount:
+          type: number
+          nullable: true
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              name:
+                type: string
+              amount:
+                type: number
+    Rules:
+      type: object
+      properties:
+        booking_rules:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+              name:
+                type: string
+              check_in_days:
+                type: string
+                nullable: true
+              check_out_days:
+                type: string
+                nullable: true
+              minimum_stay:
+                type: integer
+                nullable: true
+              maximum_stay:
+                type: integer
+                nullable: true
+        rates:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              type:
+                type: string
+                enum: [accom, extra_adults, extra_children]
+              amount:
+                type: number
+              nights:
+                type: integer
+                nullable: true
+        seasons:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              name:
+                type: string
+              priority:
+                type: string
+                enum: [high, '', low]
+    DaySummary:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        arrivals:
+          type: array
+          items:
+            $ref: '#/components/schemas/Reservation'
+        departures:
+          type: array
+          items:
+            $ref: '#/components/schemas/Reservation'
+        in_house:
+          type: array
+          items:
+            $ref: '#/components/schemas/Reservation'
+    Event:
+      type: object
+      description: One mha_events (outbox) row.
+      properties:
+        id:
+          type: integer
+        created:
+          type: string
+          format: date-time
+        type:
+          type: string
+          examples:
+            - hb_create_reservation
+            - hb_reservations_updated
+            - hb_reservation_updated
+            - hb_parent_reservation_updated
+            - hb_blocked_accom_updated
+            - hb_parent_reservation_cancelled
+        resort_id:
+          $ref: '#/components/schemas/ResortId'
+        entity:
+          type: string
+          examples: [reservation, block]
+        entity_id:
+          type: integer
+        payload:
+          type: object
+          additionalProperties: true
+        cursor:
+          type: integer

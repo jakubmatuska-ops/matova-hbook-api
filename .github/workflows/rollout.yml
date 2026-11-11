@@ -1,0 +1,105 @@
+name: Rollout
+
+# Moves a signed release through the sites: test property → verified + soak →
+# each live property in turn → everyone. Runs on a timer; one small step per
+# run. Halts (and withdraws the release from sites not yet reached) on any
+# failed install or failed health verification, and opens an issue.
+# It asks the Matova OS backend to check/update one site; no site credential
+# and no signing key ever exists in GitHub.
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_run:
+    workflows: ['Release (signed, staged)']
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'step (default), halt, or resume a halted rollout'
+        type: choice
+        options: [step, halt, resume]
+        default: step
+
+permissions:
+  contents: write
+  id-token: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  ROLLOUT_URL: https://czjkwoyjpmyupcshwslu.supabase.co/functions/v1/plugin-rollout
+  AUDIENCE: matova-plugin-release
+
+jobs:
+  rollout:
+    runs-on: ubuntu-latest
+    # Scheduled/chained runs only ever use the workflow file from main.
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Anything to do?
+        id: need
+        run: |
+          set -euo pipefail
+          ACTIVE=$(jq -r 'if (.rollout.candidate // null) == null then "no" elif .rollout.candidate.done_at then "no" elif .rollout.candidate.halted then "halted" else "yes" end' update.json)
+          echo "active=$ACTIVE" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        if: steps.need.outputs.active != 'no'
+        with:
+          node-version: 20
+
+      - name: Owner control
+        if: github.event_name == 'workflow_dispatch' && inputs.action != 'step' && steps.need.outputs.active != 'no'
+        run: |
+          set -euo pipefail
+          node tools/rollout-cli.mjs control update.json "${{ inputs.action }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: One rollout step
+        id: step
+        if: steps.need.outputs.active == 'yes' && (github.event_name != 'workflow_dispatch' || inputs.action == 'step')
+        run: |
+          set -euo pipefail
+          OIDC_TOKEN=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE" | jq -r '.value')
+          echo "::add-mask::$OIDC_TOKEN"
+          export OIDC_TOKEN
+          node tools/rollout-cli.mjs step update.json | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Save rollout state
+        if: steps.need.outputs.active != 'no'
+        run: |
+          set -euo pipefail
+          git diff --quiet update.json && exit 0
+          git config user.name "matova-release"; git config user.email "release@users.noreply.github.com"
+          git add update.json
+          git commit -qm "Rollout: $(jq -r '.rollout.candidate | "\(.release.version) stage \(.stage) \(.phase)" + (if .halted then " HALTED" else "" end)' update.json)"
+          git push origin HEAD:main
+
+      - name: Report a halt
+        if: steps.step.outputs.halted == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REASON: ${{ steps.step.outputs.halt_reason }}
+        run: |
+          gh issue create --title "Plugin rollout halted: $(jq -r '.rollout.candidate.release.version' update.json)" \
+            --body "$(printf 'The staged rollout stopped and the release was withdrawn from sites that had not been verified.\n\nReason: %s\n\n```\n%s\n```\n\nFix forward with a new version, or run the Rollout workflow with action "resume".' "$REASON" "$(node tools/rollout-cli.mjs describe update.json)")"
+
+      # GitHub pauses timers on quiet repositories, so an active rollout keeps
+      # itself going instead of depending on the timer alone.
+      - name: Continue while a rollout is active
+        if: steps.need.outputs.active == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          STILL=$(jq -r 'if .rollout.candidate.done_at or .rollout.candidate.halted then "no" else "yes" end' update.json)
+          test "$STILL" = "yes" || exit 0
+          sleep 480
+          gh workflow run rollout.yml --ref main
