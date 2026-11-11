@@ -30,7 +30,7 @@ class MHA_Updater {
      * so write access to the repository alone can no longer ship code to the
      * resort sites. The signature covers plugin slug + version + SHA-256 of the ZIP. Override with the MHA_UPDATE_PUBKEY constant (wp-config).
      */
-    const PUBKEY_B64 = '';   // set by the release process from the managed signer (see docs/RELEASE_SIGNING.md)
+    const PUBKEY_B64 = '6sLtMy3UNuDCt8cCc53icw7rEmnoX7GaTiEPtxz5xaI=';   // set by the release process from the managed signer (see docs/RELEASE_SIGNING.md)
     /** Optional NEXT key, shipped one release ahead so the signer can rotate
      *  without any site ever being unable to verify an update. */
     const PUBKEY_NEXT_B64 = '';
