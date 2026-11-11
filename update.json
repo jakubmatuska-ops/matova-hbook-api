@@ -24,6 +24,12 @@
         "download_url": "https://github.com/jakubmatuska-ops/matova-hbook-api/releases/download/v2.4.0/matova-hbook-api.zip",
         "sha256": "78cb15efde4ce7aca2a6bbf971b940e22f9be85a0635bdebd679cd9e126a6c9e",
         "signature": "DArzHobF7t8NR0HgAXYxLDcEAsHFrTsUNmF2B1Gzk7Xkz8y3RmiHqD2AbEnr0KzwVWjiCohoVor8ezrzk7eBAQ=="
+      },
+      "kempslunicko.cz": {
+        "version": "2.4.0",
+        "download_url": "https://github.com/jakubmatuska-ops/matova-hbook-api/releases/download/v2.4.0/matova-hbook-api.zip",
+        "sha256": "78cb15efde4ce7aca2a6bbf971b940e22f9be85a0635bdebd679cd9e126a6c9e",
+        "signature": "DArzHobF7t8NR0HgAXYxLDcEAsHFrTsUNmF2B1Gzk7Xkz8y3RmiHqD2AbEnr0KzwVWjiCohoVor8ezrzk7eBAQ=="
       }
     },
     "candidate": {
@@ -35,8 +41,8 @@
       },
       "started_at": "2026-11-11T11:12:19.482Z",
       "stage": 3,
-      "phase": "assign",
-      "phase_at": "2026-11-11T17:29:07.138Z",
+      "phase": "update",
+      "phase_at": "2026-11-11T17:37:36.754Z",
       "verified": {
         "borny": "2026-11-11T14:41:25.223Z",
         "passage": "2026-11-11T16:04:58.769Z",
