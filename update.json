@@ -22,10 +22,12 @@
         "signature": "DArzHobF7t8NR0HgAXYxLDcEAsHFrTsUNmF2B1Gzk7Xkz8y3RmiHqD2AbEnr0KzwVWjiCohoVor8ezrzk7eBAQ=="
       },
       "started_at": "2026-11-11T11:12:19.482Z",
-      "stage": 0,
-      "phase": "soak",
-      "phase_at": "2026-11-11T12:35:50.001Z",
-      "verified": {},
+      "stage": 1,
+      "phase": "assign",
+      "phase_at": "2026-11-11T14:41:25.223Z",
+      "verified": {
+        "borny": "2026-11-11T14:41:25.223Z"
+      },
       "baseline": {
         "borny": {
           "status": "live",
